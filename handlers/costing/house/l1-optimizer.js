@@ -16,9 +16,9 @@ const getSpecRate = (constituent, specLevel) => {
     return specData ? specData.rate : null;
 };
 
-const computeScriptInputs = (constituentsInputData) => {
+const computeScriptInputs = (constituentsInputData, targetBudget) => {
     const quantities = [];
-    const costs = [];
+    const rates = [];
     const preferenceLevels = [];
 
     // Process each constituent in the order defined by template
@@ -29,30 +29,29 @@ const computeScriptInputs = (constituentsInputData) => {
         quantities.push(constituentData.quantity);
 
         // Get costs for this constituent up to selected spec level
-        const constituentCosts = [];
+        const constituentRates = [];
         const constituentPreferences = [];
         
-        // Add costs and preferences up to selected spec level (inclusive)
         for (let specLevel = 1; specLevel <= constituentData.specLevel; specLevel++) {
-            constituentCosts.push(getSpecRate(constituent, specLevel));
+            constituentRates.push(getSpecRate(constituent, specLevel));
             
             const levelsBelow = constituentData.specLevel - specLevel;
             const preference = levelsBelow === 0 
-                ? 1 
-                : 1 / Math.pow(constituentData.priorityLevel, levelsBelow);
+                ? 1.0 
+                : 1.0 / Math.pow(2, levelsBelow);
             
             constituentPreferences.push(preference);
         }
 
-        costs.push(constituentCosts);
+        rates.push(constituentRates);
         preferenceLevels.push(constituentPreferences);
     });
 
     return {
         quantities,
-        costs,
+        rates,
         preferenceLevels,
-        budget: constituentsInputData.BUDGET
+        budget: targetBudget
     };
 };
 
@@ -83,6 +82,69 @@ const validateConstituentsData = (constituentsInputData) => {
     return true;
 };
 
+function runOptimizer(inputData) {
+  return new Promise((resolve, reject) => {
+    // Convert input data to JSON string
+    const inputJson = JSON.stringify(inputData);
+    
+    // Spawn Python process
+    const pythonProcess = spawn('python3', [
+      path.join(process.cwd(), 'scripts/optimizer.py'),
+      inputJson
+    ]);
+    
+    let resultData = '';
+    let debugData = '';
+    
+    // Collect stdout (result data)
+    pythonProcess.stdout.on('data', (data) => {
+      resultData += data.toString();
+    });
+    
+    // Collect stderr (debug logs)
+    pythonProcess.stderr.on('data', (data) => {
+      debugData += data.toString();
+      // Optionally log debug messages to console
+      console.log('Python Debug:', data.toString().trim());
+    });
+    
+    // Handle process completion
+    pythonProcess.on('close', (code) => {
+      if (code !== 0) {
+        return reject(new Error(`Python process exited with code ${code}`));
+      }
+      
+      try {
+        const result = JSON.parse(resultData);
+        
+        // Create a simple mapping of constituent names to their selected choices
+        const constituentChoices = {};
+        if (result.choices && templateData.constituentList) {
+          result.choices.forEach((choice, index) => {
+            if (index < templateData.constituentList.length) {
+              constituentChoices[templateData.constituentList[index]] = choice + 1;
+            }
+          });
+        }
+        
+        resolve({
+          choices: constituentChoices,
+          debugLogs: debugData,
+          cost: result.cost,
+          preferences: result.preferences
+        });
+      } catch (error) {
+        reject(new Error(`Failed to parse Python output: ${error.message}`));
+      }
+    });
+    
+    // Handle potential errors
+    pythonProcess.on('error', (error) => {
+      reject(new Error(`Failed to start Python process: ${error.message}`));
+    });
+  });
+}
+
 const handler = async (req, response) => {
     try {
         const { constituentsInputData, targetBudget } = req.body;
@@ -110,15 +172,21 @@ const handler = async (req, response) => {
             });
         }
         
-        const scriptInputs = computeScriptInputs(constituentsInputData);
-
-        // Mock response for testing
-        const mockResult = {};
-        templateData.constituentList.forEach(constituent => {
-            mockResult[constituent] = 1;
-        });
-
-        return response.status(200).send(mockResult);
+        const scriptInputs = computeScriptInputs(constituentsInputData, targetBudget);
+        console.log('scriptInputs', scriptInputs);
+        
+        try {
+            const result = await runOptimizer(scriptInputs, templateData.constituentList);
+            console.log('Optimization Result:', result.choices);
+            console.log('Debug Logs:', result.debugLogs);
+            return response.status(200).send(result.choices);
+        } catch (error) {
+            console.error('Error in optimizer:', error);
+            return response.status(500).send({
+                error: 'Internal server error',
+                message: error.message
+            });
+        }
     } catch (error) {
         console.error('Error in handler:', error);
         return response.status(500).send({

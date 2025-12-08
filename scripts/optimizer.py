@@ -1,5 +1,13 @@
 import sys
 import json
+import logging
+
+# Set up logging for debug messages
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='DEBUG: %(message)s',
+    stream=sys.stderr
+)
 
 def solve_multi_choice_knapsack(C, P, B):
     n_choices = len(C)  
@@ -12,6 +20,8 @@ def solve_multi_choice_knapsack(C, P, B):
     
     if B >= max_cost:
         # choose the highest preference choices
+        logging.debug(f'max_cost: {max_cost}')
+        logging.debug(f'min_cost: {min_cost}')
         return {"error": "Budget out of feasible range"}
     
     bucket_size = B / 1000
@@ -69,27 +79,23 @@ def solve_multi_choice_knapsack(C, P, B):
     final_pref, final_choices = dp[n_choices - 1][buckets - 1]
     actual_cost = sum(C[i][choice] for i, choice in enumerate(final_choices))
     
+    logging.debug(f'Final preferences: {final_pref}')
+    logging.debug(f'Actual cost: {actual_cost}')
+    
     return {
-        "preferences": final_pref,
         "choices": final_choices,
-        "cost": actual_cost
     }
 
 input_data = json.loads(sys.argv[1])
 
 Q = input_data["quantities"]
-P = input_data["preferences"]
-B = input_data["budget"]
+R = input_data["rates"]
+P = input_data["preferenceLevels"]
+budget = input_data["budget"]
 
-R = [
-    [10, 15, 20, 25, 30],    
-    [50, 60, 70, 80, 90],    
-    [100, 120, 140, 160, 180],  
-    [200, 250, 300, 350, 400]  
-]
-
+# Calculate costs based on quantities and rates
 C = [[r * Q[i] for r in R[i]] for i in range(len(R))]
 
 # Solve and output result
-result = solve_multi_choice_knapsack(C, P, B)
+result = solve_multi_choice_knapsack(C, P, budget)
 print(json.dumps(result)) 
